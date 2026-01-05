@@ -17,11 +17,13 @@ testpaths = [
   "electroflex-train/tests",
   "electroflex-eval/tests",
   "electroflex-api/tests",
+  "electroflex-contracts/tests",
   "tests"
 ]
 pythonpath = [
   "electroflex-data/src",
   "electroflex-train/src",
   "electroflex-eval/src",
-  "electroflex-api/src"
+  "electroflex-api/src",
+  "electroflex-contracts/src"
 ]
