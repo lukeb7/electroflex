@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -11,6 +12,27 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from electroflex_contracts import Forecaster, ModelSpec
+
+def _resolve_champion_model(*, artifacts_root: Path) -> tuple[Path, Path | None, dict | None]:
+    registry_path = artifacts_root / "registry" / "champion.json"
+    if not registry_path.exists():
+        raise FileNotFoundError("champion.json not found")
+
+    raw = registry_path.read_text(encoding="utf-8").strip()
+    if not raw:
+        raise FileNotFoundError("champion.json is empty")
+
+    try:
+        champion = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise FileNotFoundError("champion.json is invalid JSON") from e
+
+    model_dir = Path(champion["model_path"])
+    model_path = model_dir / "model.pkl"
+    model_spec_path = model_dir / "model_spec.json"
+
+    return model_path, model_spec_path, champion
+
 
 class ContextPoint(BaseModel):
     timestamp: str
@@ -54,6 +76,21 @@ def create_app(
         payload: dict = {"status": "ok"}
         payload["model_spec"] = asdict(spec) if spec is not None else None
         return payload
+    
+    @app.get("/version")
+    def version() -> dict:
+        payload = {
+            "model_path": str(model_path),
+        }
+        if spec is not None:
+            payload.update(
+                {
+                    "run_id": spec.run_id if hasattr(spec, "run_id") else None,
+                    "git_sha": getattr(spec, "git_sha", None),
+                    "trained_at": getattr(spec, "trained_at", None),
+                }
+            )
+        return payload
 
     @app.post("/predict", response_model=PredictResponse)
     def predict(req: PredictRequest) -> PredictResponse:
@@ -90,18 +127,49 @@ def create_app(
 
     return app
 
-def _default_app() -> FastAPI:
-    model_path = Path(
-        os.getenv("ELECTROFLEX_MODEL_PATH", "artifacts/latest/model/model.pkl")
-    )
+def _default_app(*, artifacts_root: Path = Path("artifacts")) -> FastAPI:
+    artifacts_root = Path(artifacts_root)
 
-    spec_path_env = os.getenv(
-        "ELECTROFLEX_MODEL_SPEC_PATH",
-        "artifacts/latest/model/model_spec.json",
-    )
-    spec_path = Path(spec_path_env) if spec_path_env else None
+    # 1) Developer override
+    model_path_env = os.getenv("ELECTROFLEX_MODEL_PATH")
+    spec_path_env = os.getenv("ELECTROFLEX_MODEL_SPEC_PATH")
 
-    return create_app(model_path=model_path, model_spec_path=spec_path)
+    if model_path_env:
+        return create_app(
+            model_path=Path(model_path_env),
+            model_spec_path=Path(spec_path_env) if spec_path_env else None,
+        )
+
+    # 2) Champion registry
+    try:
+        model_path, spec_path, _ = _resolve_champion_model(artifacts_root=artifacts_root)
+        return create_app(model_path=model_path, model_spec_path=spec_path)
+    except FileNotFoundError:
+        pass
+
+    # 3) Safe unconfigured app
+    app = FastAPI(title="ElectroFlex API", version="0.1.0")
+
+    @app.get("/health")
+    def health() -> dict:
+        return {
+            "status": "ok",
+            "model_spec": None,
+            "note": (
+                "No model configured. "
+                "Set ELECTROFLEX_MODEL_PATH or promote a champion model."
+            ),
+        }
+
+    @app.post("/predict")
+    def predict_unconfigured():
+        raise HTTPException(
+            status_code=503,
+            detail="Model not configured",
+        )
+
+    return app
+
 
 # Import-safe default app:
 # - Works with uvicorn when artifacts exist
