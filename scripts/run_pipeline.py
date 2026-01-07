@@ -9,6 +9,7 @@ from pathlib import Path
 from electroflex_contracts.run_spec import RunSpec
 from electroflex_eval import EvalConfig, evaluate
 from electroflex_train import train
+from scripts.promote_if_better import promote_if_better
 
 
 def _utc_now() -> datetime:
@@ -95,6 +96,14 @@ def run_pipeline(
         json.dumps(rs.model_dump(mode="json"), indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+    decision = promote_if_better(
+        candidate_run_dir=run_dir,
+        artifacts_root=artifacts_root,
+        improvement_threshold=0.01,
+    )
+
+    print(f"[run_pipeline] promotion: promote={decision.promote} reason={decision.reason}")
 
     return run_dir
 
